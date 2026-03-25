@@ -9,6 +9,10 @@ const bookmarkDragState = {
 const categoryDragState = {
   draggingId: null
 };
+const categoryTreeState = {
+  expandedIds: new Set()
+};
+const ROOT_FOLDER_NAMES = new Set(['书签栏', 'Bookmarks Bar', 'Bookmarks bar', 'Other bookmarks', 'Mobile bookmarks']);
 
 const checkState = {
   running: false,
@@ -53,6 +57,7 @@ function loadData() {
     saveCategories();
   }
   normalizeCategoryMeta();
+  syncCategoryHierarchyFromStoredBookmarks();
 }
 
 function saveBookmarks() {
@@ -99,6 +104,16 @@ function snapshotCategories() {
   return categories.map((c) => ({ ...c }));
 }
 
+function resetCategoriesToDefault() {
+  categories = [{
+    id: '1',
+    name: '未分类',
+    color: '#95a5a6',
+    parentId: null,
+    sortOrder: 1
+  }];
+}
+
 function normalizeCategoryMeta() {
   categories = categories.map((c, idx) => {
     const rawOrder = Number(c.sortOrder);
@@ -109,6 +124,64 @@ function normalizeCategoryMeta() {
       sortOrder
     };
   });
+}
+
+function normalizeFolderPath(rawPath) {
+  const arr = Array.isArray(rawPath) ? rawPath : String(rawPath || '').split('/');
+  let parts = arr.map((s) => String(s || '').trim()).filter(Boolean);
+  if (parts.length > 1 && ROOT_FOLDER_NAMES.has(parts[0])) parts = parts.slice(1);
+  return parts;
+}
+
+function ensureCategoryPath(pathParts) {
+  if (!pathParts || pathParts.length === 0) return null;
+  let parentId = null;
+  let changed = false;
+  pathParts.forEach((name) => {
+    let node = categories.find((c) => c.name === name);
+    if (!node) {
+      node = {
+        id: generateId(),
+        name,
+        color: '#3498db',
+        parentId,
+        sortOrder: getNextCategorySortOrder(parentId),
+        createdAt: new Date().toISOString()
+      };
+      categories.push(node);
+      changed = true;
+    } else if (parentId && !node.parentId) {
+      node.parentId = parentId;
+      changed = true;
+    }
+    parentId = node.id;
+  });
+  return changed;
+}
+
+function syncCategoryHierarchyFromStoredBookmarks() {
+  let categoryChanged = false;
+  let bookmarkChanged = false;
+
+  bookmarks.forEach((b) => {
+    const parts = normalizeFolderPath(b.originalPath);
+    if (parts.length === 0) return;
+    if (ensureCategoryPath(parts)) categoryChanged = true;
+
+    const first = parts[0];
+    const leaf = parts[parts.length - 1];
+    if (leaf && first && b.category === first && leaf !== first) {
+      b.category = leaf;
+      b.updatedAt = new Date().toISOString();
+      bookmarkChanged = true;
+    }
+  });
+
+  if (categoryChanged) {
+    normalizeCategoryMeta();
+    saveCategories();
+  }
+  if (bookmarkChanged) saveBookmarks();
 }
 
 function getCategoryChildren(parentId) {
@@ -136,6 +209,10 @@ function getDescendantCategoryNamesById(categoryId) {
     getCategoryChildren(id).forEach((child) => stack.push(child.id));
   }
   return result;
+}
+
+function hasCategoryChildren(categoryId) {
+  return categories.some((c) => (c.parentId || null) === (categoryId || null));
 }
 
 function getCategoryScopeNames(selectedName) {
@@ -244,12 +321,17 @@ function renderCategories() {
   const renderCategoryNode = (category, depth) => {
     const scopeNames = new Set(getDescendantCategoryNamesById(category.id));
     const count = bookmarks.filter((b) => scopeNames.has(b.category)).length;
+    const hasChildren = hasCategoryChildren(category.id);
+    const expanded = categoryTreeState.expandedIds.has(category.id);
     const item = document.createElement('li');
     const leftPad = 10 + depth * 18;
     item.innerHTML = `
       <div class="flex justify-between items-center category-sort-item rounded-md" data-category-id="${category.id}" draggable="true">
         <button class="w-full text-left px-3 py-2 rounded-md category-drop-zone ${currentCategory === category.name ? 'bg-primary text-white' : 'hover:bg-gray-100'} flex justify-between items-center flex-1 mr-2" data-category="${escapeAttr(category.name)}" data-drop-category="${escapeAttr(category.name)}" style="padding-left:${leftPad}px">
-          <span>${escapeHtml(category.name)}</span>
+          <span class="flex items-center min-w-0 gap-1">
+            <span class="toggle-children w-4 text-center ${hasChildren ? '' : 'text-transparent'}" data-id="${category.id}" role="button">${hasChildren ? (expanded ? '▼' : '▶') : '•'}</span>
+            <span class="truncate">${escapeHtml(category.name)}</span>
+          </span>
           <span class="bg-gray-200 text-gray-700 text-xs px-2 py-1 rounded-full">${count}</span>
         </button>
         <div class="flex space-x-1">
@@ -260,7 +342,7 @@ function renderCategories() {
     `;
     categoryList.appendChild(item);
 
-    getCategoryChildren(category.id).forEach((child) => renderCategoryNode(child, depth + 1));
+    if (expanded) getCategoryChildren(category.id).forEach((child) => renderCategoryNode(child, depth + 1));
   };
 
   const idSet = new Set(categories.map((c) => c.id));
@@ -276,9 +358,23 @@ function renderCategories() {
 
   document.querySelectorAll('#categoryList button[data-category]').forEach((button) => {
     button.addEventListener('click', () => {
-      currentCategory = button.dataset.category || '全部';
+      const selectedName = button.dataset.category || '全部';
+      currentCategory = selectedName;
+      const selected = categories.find((c) => c.name === selectedName);
+      if (selected && hasCategoryChildren(selected.id)) categoryTreeState.expandedIds.add(selected.id);
       renderCategories();
       renderBookmarks();
+    });
+  });
+
+  document.querySelectorAll('#categoryList .toggle-children[data-id]').forEach((toggle) => {
+    toggle.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const id = toggle.dataset.id;
+      if (!id || !hasCategoryChildren(id)) return;
+      if (categoryTreeState.expandedIds.has(id)) categoryTreeState.expandedIds.delete(id);
+      else categoryTreeState.expandedIds.add(id);
+      renderCategories();
     });
   });
 
@@ -412,14 +508,16 @@ function parseChromeBookmarks(html) {
         } catch (_) {
           favicon = '';
         }
-        const category = path.length > 1 ? path[1] : '未分类';
+        const folderPath = normalizeFolderPath(path);
+        const category = folderPath.length > 0 ? folderPath[folderPath.length - 1] : '未分类';
         parsedBookmarks.push({
           id: generateId(),
           title,
           url,
           category,
+          categoryPath: folderPath,
           favicon,
-          originalPath: path.join('/'),
+          originalPath: folderPath.join('/'),
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString()
         });
@@ -453,7 +551,7 @@ function dedupeBookmarks(items) {
   const set = new Set();
   const result = [];
   items.forEach((item) => {
-    const key = normalizeUrl(item.url);
+    const key = normalizeDuplicateUrl(item.url);
     if (!key || set.has(key)) return;
     set.add(key);
     result.push(item);
@@ -566,22 +664,15 @@ function normalizeUrl(raw) {
   }
 }
 
-function normalizeHostPort(raw) {
+function normalizeDuplicateUrl(raw) {
   if (!raw) return '';
   try {
     const u = new URL(raw);
-    const host = (u.hostname || '').toLowerCase();
-    let port = u.port;
-    if (!port) {
-      if (u.protocol === 'http:') port = '80';
-      else if (u.protocol === 'https:') port = '443';
-    }
-    return port ? `${host}:${port}` : host;
+    u.hash = '';
+    u.hostname = u.hostname.toLowerCase();
+    return u.toString();
   } catch (_) {
-    const text = String(raw || '').trim().toLowerCase();
-    const m = text.match(/^(?:[a-z]+:\/\/)?([^\/?#:]+)(?::(\d+))?/i);
-    if (!m) return text;
-    return m[2] ? `${m[1]}:${m[2]}` : m[1];
+    return String(raw || '').trim();
   }
 }
 
@@ -597,7 +688,7 @@ function rebuildCheckRowsFromBookmarks() {
       title: b.title,
       url: b.url,
       normalizedUrl: normalizeUrl(b.url),
-      duplicateKey: normalizeHostPort(b.url),
+      duplicateKey: normalizeDuplicateUrl(b.url),
       selected: false,
       attempts: old?.attempts || [],
       finalStatus: old?.finalStatus || 'unchecked',
@@ -1138,7 +1229,7 @@ function setupEventListeners() {
 
       const existingMap = new Map();
       bookmarks.forEach((b) => {
-        const key = normalizeUrl(b.url);
+        const key = normalizeDuplicateUrl(b.url);
         if (!key) return;
         if (!existingMap.has(key)) existingMap.set(key, []);
         existingMap.get(key).push(b);
@@ -1147,7 +1238,7 @@ function setupEventListeners() {
       const unique = [];
 
       parsed.forEach((item) => {
-        const key = normalizeUrl(item.url);
+        const key = normalizeDuplicateUrl(item.url);
         const oldList = existingMap.get(key);
         if (oldList && oldList.length > 0) duplicates.push({ olds: oldList, item });
         else unique.push(item);
@@ -1171,6 +1262,7 @@ function setupEventListeners() {
 
       bookmarks = [...bookmarks, ...unique];
       ensureCategoriesExist(parsed.map((p) => p.category));
+      syncCategoryHierarchyFromStoredBookmarks();
       saveBookmarks();
       saveCategories();
 
@@ -1361,18 +1453,22 @@ function setupEventListeners() {
     operationHistory.push({
       type: 'clear',
       prevBookmarks: snapshotBookmarks(),
+      prevCategories: snapshotCategories(),
       prevCurrentCategory: currentCategory,
       timestamp: new Date().toISOString()
     });
     bookmarks = [];
+    resetCategoriesToDefault();
+    categoryTreeState.expandedIds.clear();
     currentCategory = '全部';
     saveBookmarks();
+    saveCategories();
     refreshLists();
     rebuildCheckRowsFromBookmarks();
     renderCheckTree();
     renderCheckResults();
     updateCheckStats();
-    alert('所有书签已清空');
+    alert('所有书签与分类已清空');
   });
 
   document.getElementById('undoBtn').addEventListener('click', () => {
@@ -1401,7 +1497,10 @@ function setupEventListeners() {
     }
     if (op.type === 'clear') {
       bookmarks = (op.prevBookmarks || []).map((b) => ({ ...b }));
+      categories = (op.prevCategories || categories).map((c) => ({ ...c }));
+      normalizeCategoryMeta();
       currentCategory = op.prevCurrentCategory || '全部';
+      saveCategories();
     }
 
     saveBookmarks();
@@ -1453,7 +1552,7 @@ function setupEventListeners() {
         title: b.title,
         url: b.url,
         normalizedUrl: normalizeUrl(b.url),
-        duplicateKey: normalizeHostPort(b.url),
+        duplicateKey: normalizeDuplicateUrl(b.url),
         selected: false,
         attempts: [],
         finalStatus: 'unchecked',
