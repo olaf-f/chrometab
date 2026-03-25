@@ -1,0 +1,309 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chrome书签整理</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css" rel="stylesheet">
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            primary: '#3498db',
+            secondary: '#2ecc71',
+            neutral: '#f5f5f5',
+            dark: '#333333'
+          }
+        }
+      }
+    }
+  </script>
+  <style type="text/tailwindcss">
+    @layer utilities {
+      .bookmark-card {
+        @apply bg-white rounded-lg shadow-md p-4 hover:shadow-lg transition-shadow duration-300;
+      }
+      .btn {
+        @apply px-4 py-2 rounded-md font-medium transition-colors duration-300;
+      }
+      .btn-primary {
+        @apply bg-primary text-white hover:bg-blue-600;
+      }
+      .btn-secondary {
+        @apply bg-secondary text-white hover:bg-green-600;
+      }
+      .btn-outline {
+        @apply border border-gray-300 text-gray-700 hover:bg-gray-100;
+      }
+      .tab-btn-active {
+        @apply bg-white text-primary;
+      }
+      .tab-btn-normal {
+        @apply text-white/90 hover:bg-blue-600;
+      }
+      .badge-ok {
+        @apply text-green-700 bg-green-100 rounded px-2 py-0.5 text-xs;
+      }
+      .badge-bad {
+        @apply text-red-700 bg-red-100 rounded px-2 py-0.5 text-xs;
+      }
+      .badge-mid {
+        @apply text-yellow-700 bg-yellow-100 rounded px-2 py-0.5 text-xs;
+      }
+    }
+  </style>
+</head>
+<body class="bg-neutral min-h-screen">
+  <nav class="bg-primary text-white shadow-md">
+    <div class="container mx-auto px-4 py-3 flex justify-between items-center">
+      <div class="flex items-center space-x-2">
+        <i class="fa fa-bookmark-o text-2xl"></i>
+        <h1 class="text-xl font-bold">Chrome书签整理</h1>
+      </div>
+      <div class="flex items-center space-x-2">
+        <button id="tabBookmarksBtn" class="btn tab-btn-active">书签管理</button>
+        <button id="tabCheckerBtn" class="btn tab-btn-normal">有效性检测</button>
+        <button id="importBtn" class="btn btn-secondary flex items-center space-x-1">
+          <i class="fa fa-upload"></i>
+          <span>导入</span>
+        </button>
+        <button id="settingsBtn" class="btn btn-outline text-white border-white hover:bg-blue-600">
+          <i class="fa fa-cog"></i>
+        </button>
+      </div>
+    </div>
+  </nav>
+
+  <section id="bookmarksSection">
+    <div class="container mx-auto px-4 py-4">
+      <div class="relative">
+        <input type="text" id="searchInput" placeholder="搜索书签..." class="w-full px-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+        <button id="searchBtn" class="absolute right-2 top-1/2 transform -translate-y-1/2 text-gray-500 hover:text-primary">
+          <i class="fa fa-search"></i>
+        </button>
+      </div>
+    </div>
+
+    <div class="container mx-auto px-4 pb-8">
+      <div class="flex flex-col lg:flex-row gap-6">
+        <div class="lg:w-1/4 bg-white rounded-lg shadow-md p-4">
+          <div class="flex justify-between items-center mb-4">
+            <h2 class="text-lg font-semibold text-dark">分类</h2>
+            <button id="addCategoryBtn" class="btn btn-primary text-sm py-1"><i class="fa fa-plus mr-1"></i>添加</button>
+          </div>
+          <ul id="categoryList" class="space-y-2"></ul>
+        </div>
+
+        <div class="lg:w-3/4">
+          <div class="flex justify-between items-center mb-4">
+            <h2 class="text-lg font-semibold text-dark">书签</h2>
+            <button id="addBookmarkBtn" class="btn btn-secondary text-sm py-1"><i class="fa fa-plus mr-1"></i>添加</button>
+          </div>
+          <div id="bookmarkGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="checkerSection" class="hidden">
+    <div class="container mx-auto px-4 py-4 space-y-4">
+      <div class="bg-white rounded-lg shadow-md p-4 grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div class="lg:col-span-2 space-y-3">
+          <div class="flex items-center gap-2">
+            <label class="text-sm text-gray-600 w-20">书签文件</label>
+            <input id="checkerFileInput" type="file" accept=".html" class="flex-1 border border-gray-300 rounded p-2 text-sm">
+          </div>
+          <div class="flex flex-wrap gap-2">
+            <button id="checkFirstBtn" class="btn btn-primary text-sm">首次检测</button>
+            <button id="checkRetryBtn" class="btn btn-outline text-sm">再次检测</button>
+            <button id="checkInvalidRetryBtn" class="btn btn-outline text-sm">失效重检</button>
+            <button id="checkStopBtn" class="btn btn-outline text-sm">停止检测</button>
+            <button id="deleteInvalidBtn" class="btn btn-outline text-sm text-red-600 border-red-300">删除失效链</button>
+            <button id="openDuplicatesBtn" class="btn btn-outline text-sm">重复项列表</button>
+            <button id="exportCheckedBtn" class="btn btn-secondary text-sm">另存为</button>
+          </div>
+          <div class="text-sm text-gray-700 flex flex-wrap gap-4">
+            <span>总记录: <b id="statTotal">0</b></span>
+            <span>有效数: <b id="statValid">0</b></span>
+            <span>失效数: <b id="statInvalid">0</b></span>
+            <span>重复数: <b id="statDuplicate">0</b></span>
+            <span>进度: <b id="statProgress">0/0</b></span>
+          </div>
+        </div>
+
+        <div class="space-y-2">
+          <div class="text-sm font-semibold">检测参数</div>
+          <div class="grid grid-cols-2 gap-2 text-sm">
+            <label class="text-gray-600 self-center">并发数</label>
+            <input id="checkConcurrency" type="number" min="1" max="200" value="20" class="border border-gray-300 rounded px-2 py-1">
+            <label class="text-gray-600 self-center">超时(秒)</label>
+            <input id="checkTimeout" type="number" min="1" max="60" value="10" class="border border-gray-300 rounded px-2 py-1">
+            <label class="text-gray-600 self-center">重试次数</label>
+            <input id="checkRetries" type="number" min="1" max="3" value="3" class="border border-gray-300 rounded px-2 py-1">
+          </div>
+          <p class="text-xs text-gray-500">浏览器环境受跨域限制，检测结果为可达性近似结果。</p>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-4 gap-4">
+        <div class="lg:col-span-1 bg-white rounded-lg shadow-md p-3">
+          <div class="text-sm font-semibold mb-2">检测区（目录）</div>
+          <div id="checkTree" class="text-sm max-h-[500px] overflow-auto"></div>
+        </div>
+
+        <div class="lg:col-span-2 bg-white rounded-lg shadow-md p-3">
+          <div class="flex items-center justify-between mb-2">
+            <div class="text-sm font-semibold">结果明细</div>
+            <select id="resultFilter" class="border border-gray-300 rounded px-2 py-1 text-sm">
+              <option value="all">全部</option>
+              <option value="valid">有效</option>
+              <option value="invalid">失效</option>
+              <option value="unknown">未知</option>
+              <option value="duplicate">重复</option>
+              <option value="unchecked">未检测</option>
+            </select>
+          </div>
+          <div class="overflow-auto max-h-[500px] border border-gray-200 rounded">
+            <table class="min-w-full text-xs">
+              <thead class="bg-gray-50 sticky top-0">
+                <tr>
+                  <th class="p-2 text-left">选择</th>
+                  <th class="p-2 text-left">文件夹</th>
+                  <th class="p-2 text-left">名称</th>
+                  <th class="p-2 text-left">网址</th>
+                  <th class="p-2 text-center">检1</th>
+                  <th class="p-2 text-center">检2</th>
+                  <th class="p-2 text-center">检3</th>
+                  <th class="p-2 text-center">状态</th>
+                </tr>
+              </thead>
+              <tbody id="checkResultsBody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="lg:col-span-1 bg-white rounded-lg shadow-md p-3">
+          <div class="text-sm font-semibold mb-2">浏览区</div>
+          <div id="previewPanel" class="text-sm text-gray-700 space-y-2"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div id="importModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden">
+    <div class="bg-white rounded-lg shadow-xl p-6 max-w-md w-full">
+      <div class="flex justify-between items-center mb-4">
+        <h3 class="text-lg font-semibold text-dark">导入书签</h3>
+        <button id="closeImportModal" class="text-gray-500 hover:text-gray-700"><i class="fa fa-times"></i></button>
+      </div>
+      <div class="mb-4">
+        <p class="text-gray-600 mb-3">从 Chrome 导出书签 HTML 文件后上传</p>
+        <input type="file" id="bookmarkFile" accept=".html" class="w-full border border-gray-300 rounded-md p-2">
+      </div>
+      <div class="mb-4">
+        <h4 class="font-medium mb-2">或手动添加书签</h4>
+        <div class="space-y-2">
+          <input type="text" id="manualTitle" placeholder="网站标题" class="w-full px-3 py-2 border border-gray-300 rounded-md">
+          <input type="url" id="manualUrl" placeholder="网站URL" class="w-full px-3 py-2 border border-gray-300 rounded-md">
+          <select id="manualCategory" class="w-full px-3 py-2 border border-gray-300 rounded-md"></select>
+        </div>
+      </div>
+      <div class="flex space-x-2">
+        <button id="importFileBtn" class="btn btn-primary flex-1">导入文件</button>
+        <button id="addManualBtn" class="btn btn-secondary flex-1">添加书签</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="settingsModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden">
+    <div class="bg-white rounded-lg shadow-xl p-6 max-w-md w-full">
+      <div class="flex justify-between items-center mb-4">
+        <h3 class="text-lg font-semibold text-dark">设置</h3>
+        <button id="closeSettingsModal" class="text-gray-500 hover:text-gray-700"><i class="fa fa-times"></i></button>
+      </div>
+      <div class="space-y-4">
+        <div>
+          <label class="block text-gray-700 mb-2">外观主题</label>
+          <select id="themeSelect" class="w-full px-3 py-2 border border-gray-300 rounded-md">
+            <option value="light">浅色</option>
+            <option value="dark">深色</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-gray-700 mb-2">字体大小</label>
+          <input type="range" id="fontSizeSlider" min="12" max="18" value="14" class="w-full">
+        </div>
+        <button id="exportBtn" class="btn btn-primary w-full"><i class="fa fa-download mr-1"></i>导出书签</button>
+        <button id="undoBtn" class="btn btn-outline w-full"><i class="fa fa-undo mr-1"></i>撤销上一步</button>
+        <button id="clearBtn" class="btn btn-outline w-full text-red-500 border-red-500 hover:bg-red-50"><i class="fa fa-trash mr-1"></i>清空所有书签</button>
+        <button id="closeSettingsBottomBtn" class="btn btn-outline w-full"><i class="fa fa-times mr-1"></i>关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="editBookmarkModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden">
+    <div class="bg-white rounded-lg shadow-xl p-6 max-w-md w-full">
+      <div class="flex justify-between items-center mb-4">
+        <h3 class="text-lg font-semibold text-dark">编辑书签</h3>
+        <button id="closeEditBookmarkModal" class="text-gray-500 hover:text-gray-700"><i class="fa fa-times"></i></button>
+      </div>
+      <div class="space-y-3">
+        <input type="hidden" id="editBookmarkId">
+        <input type="text" id="editTitle" placeholder="网站标题" class="w-full px-3 py-2 border border-gray-300 rounded-md">
+        <input type="url" id="editUrl" placeholder="网站URL" class="w-full px-3 py-2 border border-gray-300 rounded-md">
+        <select id="editCategory" class="w-full px-3 py-2 border border-gray-300 rounded-md"></select>
+      </div>
+      <div class="flex space-x-2 mt-4">
+        <button id="saveBookmarkBtn" class="btn btn-primary flex-1">保存</button>
+        <button id="deleteBookmarkBtn" class="btn btn-outline text-red-500 border-red-500 hover:bg-red-50">删除</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="addCategoryModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden">
+    <div class="bg-white rounded-lg shadow-xl p-6 max-w-md w-full">
+      <div class="flex justify-between items-center mb-4">
+        <h3 class="text-lg font-semibold text-dark">添加分类</h3>
+        <button id="closeAddCategoryModal" class="text-gray-500 hover:text-gray-700"><i class="fa fa-times"></i></button>
+      </div>
+      <div class="space-y-3">
+        <input type="text" id="categoryName" placeholder="分类名称" class="w-full px-3 py-2 border border-gray-300 rounded-md">
+        <input type="color" id="categoryColor" value="#3498db" class="w-full h-10 border border-gray-300 rounded-md">
+        <select id="parentCategory" class="w-full px-3 py-2 border border-gray-300 rounded-md"><option value="">无父分类</option></select>
+      </div>
+      <div class="mt-4"><button id="saveCategoryBtn" class="btn btn-primary w-full">保存</button></div>
+    </div>
+  </div>
+
+  <div id="duplicatesModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden">
+    <div class="bg-white rounded-lg shadow-xl p-4 max-w-5xl w-[92vw]">
+      <div class="flex justify-between items-center mb-3">
+        <h3 class="text-lg font-semibold">重复项列表</h3>
+        <button id="closeDuplicatesModal" class="text-gray-500 hover:text-gray-700"><i class="fa fa-times"></i></button>
+      </div>
+      <div class="overflow-auto max-h-[60vh] border border-gray-200 rounded">
+        <table class="min-w-full text-xs">
+          <thead class="bg-gray-50 sticky top-0">
+            <tr>
+              <th class="p-2 text-left">选择</th>
+              <th class="p-2 text-left">类别</th>
+              <th class="p-2 text-left">名称</th>
+              <th class="p-2 text-left">网址</th>
+              <th class="p-2 text-left">序号</th>
+            </tr>
+          </thead>
+          <tbody id="duplicatesBody"></tbody>
+        </table>
+      </div>
+      <div class="mt-3 flex justify-end gap-2">
+        <button id="removeSelectedDuplicatesBtn" class="btn btn-primary">删除重复项</button>
+        <button id="keepDuplicatesBtn" class="btn btn-outline">不删除</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>

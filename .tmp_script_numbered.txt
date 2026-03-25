@@ -1,0 +1,1175 @@
+    1: 
+    2: let bookmarks = [];
+    3: let categories = [];
+    4: let currentCategory = '全部';
+    5: let operationHistory = [];
+    6: 
+    7: const checkState = {
+    8:   running: false,
+    9:   stopRequested: false,
+   10:   rows: [],
+   11:   duplicates: [],
+   12:   selectedPreviewId: null,
+   13:   selectedFilter: 'all',
+   14:   task: {
+   15:     total: 0,
+   16:     processed: 0,
+   17:     valid: 0,
+   18:     invalid: 0,
+   19:     duplicate: 0
+   20:   }
+   21: };
+   22: 
+   23: function init() {
+   24:   loadData();
+   25:   renderCategories();
+   26:   renderBookmarks();
+   27:   setupEventListeners();
+   28:   restoreCheckConfig();
+   29:   rebuildCheckRowsFromBookmarks();
+   30:   renderCheckTree();
+   31:   renderCheckResults();
+   32:   updateCheckStats();
+   33: }
+   34: 
+   35: function loadData() {
+   36:   const savedBookmarks = localStorage.getItem('bookmarks');
+   37:   const savedCategories = localStorage.getItem('categories');
+   38: 
+   39:   bookmarks = savedBookmarks ? JSON.parse(savedBookmarks) : [];
+   40:   if (savedCategories) {
+   41:     categories = JSON.parse(savedCategories);
+   42:   } else {
+   43:     categories = [{ id: '1', name: '未分类', color: '#95a5a6' }];
+   44:     saveCategories();
+   45:   }
+   46: }
+   47: 
+   48: function saveBookmarks() {
+   49:   localStorage.setItem('bookmarks', JSON.stringify(bookmarks));
+   50: }
+   51: 
+   52: function saveCategories() {
+   53:   localStorage.setItem('categories', JSON.stringify(categories));
+   54: }
+   55: 
+   56: function refreshLists() {
+   57:   renderCategories();
+   58:   renderBookmarks();
+   59: }
+   60: 
+   61: function ensureCategoriesExist(categoryNames) {
+   62:   const existing = new Set(categories.map((c) => c.name));
+   63:   categoryNames.forEach((name) => {
+   64:     if (!name || existing.has(name)) return;
+   65:     categories.push({
+   66:       id: generateId(),
+   67:       name,
+   68:       color: '#3498db',
+   69:       parentId: null,
+   70:       createdAt: new Date().toISOString()
+   71:     });
+   72:     existing.add(name);
+   73:   });
+   74: }
+   75: 
+   76: function renderCategories() {
+   77:   const categoryList = document.getElementById('categoryList');
+   78:   if (!categoryList) return;
+   79:   categoryList.innerHTML = '';
+   80: 
+   81:   const allItem = document.createElement('li');
+   82:   allItem.innerHTML = `
+   83:     <button class="w-full text-left px-3 py-2 rounded-md ${currentCategory === '全部' ? 'bg-primary text-white' : 'hover:bg-gray-100'} flex justify-between items-center" data-category="全部">
+   84:       <span>全部</span>
+   85:       <span id="totalBookmarks" class="bg-gray-200 text-gray-700 text-xs px-2 py-1 rounded-full">${bookmarks.length}</span>
+   86:     </button>
+   87:   `;
+   88:   categoryList.appendChild(allItem);
+   89: 
+   90:   categories.forEach((category) => {
+   91:     const count = bookmarks.filter((b) => b.category === category.name).length;
+   92:     const item = document.createElement('li');
+   93:     item.innerHTML = `
+   94:       <div class="flex justify-between items-center">
+   95:         <button class="w-full text-left px-3 py-2 rounded-md ${currentCategory === category.name ? 'bg-primary text-white' : 'hover:bg-gray-100'} flex justify-between items-center flex-1 mr-2" data-category="${escapeAttr(category.name)}">
+   96:           <span>${escapeHtml(category.name)}</span>
+   97:           <span class="bg-gray-200 text-gray-700 text-xs px-2 py-1 rounded-full">${count}</span>
+   98:         </button>
+   99:         <div class="flex space-x-1">
+  100:           <button class="edit-category px-2 py-1 text-gray-500 hover:text-primary" data-id="${category.id}"><i class="fa fa-pencil text-sm"></i></button>
+  101:           <button class="delete-category px-2 py-1 text-gray-500 hover:text-red-500" data-id="${category.id}"><i class="fa fa-trash text-sm"></i></button>
+  102:         </div>
+  103:       </div>
+  104:     `;
+  105:     categoryList.appendChild(item);
+  106:   });
+  107: 
+  108:   document.querySelectorAll('#categoryList button[data-category]').forEach((button) => {
+  109:     button.addEventListener('click', () => {
+  110:       currentCategory = button.dataset.category || '全部';
+  111:       renderCategories();
+  112:       renderBookmarks();
+  113:     });
+  114:   });
+  115: 
+  116:   document.querySelectorAll('.edit-category').forEach((button) => {
+  117:     button.addEventListener('click', (e) => {
+  118:       e.stopPropagation();
+  119:       openEditCategoryModal(button.dataset.id);
+  120:     });
+  121:   });
+  122: 
+  123:   document.querySelectorAll('.delete-category').forEach((button) => {
+  124:     button.addEventListener('click', (e) => {
+  125:       e.stopPropagation();
+  126:       deleteCategory(button.dataset.id);
+  127:     });
+  128:   });
+  129: 
+  130:   updateCategorySelectors();
+  131: }
+  132: 
+  133: function updateCategorySelectors() {
+  134:   const selectors = [document.getElementById('manualCategory'), document.getElementById('editCategory')];
+  135:   selectors.forEach((selector) => {
+  136:     if (!selector) return;
+  137:     selector.innerHTML = '';
+  138:     categories.forEach((category) => {
+  139:       const option = document.createElement('option');
+  140:       option.value = category.name;
+  141:       option.textContent = category.name;
+  142:       selector.appendChild(option);
+  143:     });
+  144:   });
+  145: 
+  146:   const parentCategorySelector = document.getElementById('parentCategory');
+  147:   if (parentCategorySelector) {
+  148:     parentCategorySelector.innerHTML = '<option value="">无父分类</option>';
+  149:     categories.forEach((category) => {
+  150:       const option = document.createElement('option');
+  151:       option.value = category.id;
+  152:       option.textContent = category.name;
+  153:       parentCategorySelector.appendChild(option);
+  154:     });
+  155:   }
+  156: }
+  157: 
+  158: function renderBookmarks() {
+  159:   const bookmarkGrid = document.getElementById('bookmarkGrid');
+  160:   if (!bookmarkGrid) return;
+  161: 
+  162:   let filtered = bookmarks;
+  163:   if (currentCategory !== '全部') {
+  164:     filtered = bookmarks.filter((b) => b.category === currentCategory);
+  165:   }
+  166: 
+  167:   bookmarkGrid.innerHTML = '';
+  168:   if (filtered.length === 0) {
+  169:     bookmarkGrid.innerHTML = `
+  170:       <div class="col-span-full text-center py-12 text-gray-500">
+  171:         <i class="fa fa-bookmark-o text-4xl mb-3"></i>
+  172:         <p>暂无书签</p>
+  173:       </div>
+  174:     `;
+  175:     return;
+  176:   }
+  177: 
+  178:   filtered.forEach((bookmark) => {
+  179:     const row = checkState.rows.find((r) => r.id === bookmark.id);
+  180:     const checkBadge = row
+  181:       ? row.finalStatus === 'valid'
+  182:         ? '<span class="badge-ok">有效</span>'
+  183:         : row.finalStatus === 'invalid'
+  184:           ? '<span class="badge-bad">失效</span>'
+  185:           : '<span class="badge-mid">未检测</span>'
+  186:       : '<span class="badge-mid">未检测</span>';
+  187: 
+  188:     const card = document.createElement('div');
+  189:     card.className = 'bookmark-card';
+  190:     card.innerHTML = `
+  191:       <div class="flex justify-between items-start mb-2 gap-2">
+  192:         <div class="flex items-center min-w-0">
+  193:           ${bookmark.favicon ? `<img src="${bookmark.favicon}" alt="favicon" class="w-4 h-4 mr-2">` : '<i class="fa fa-link w-4 h-4 mr-2 text-gray-400"></i>'}
+  194:           <h3 class="font-medium text-dark truncate">${escapeHtml(bookmark.title)}</h3>
+  195:         </div>
+  196:         <button class="text-gray-400 hover:text-primary edit-bookmark" data-id="${bookmark.id}"><i class="fa fa-pencil"></i></button>
+  197:       </div>
+  198:       <a href="${escapeAttr(bookmark.url)}" target="_blank" class="text-primary text-sm truncate mb-1 block hover:underline">${escapeHtml(bookmark.url)}</a>
+  199:       ${bookmark.originalPath ? `<div class="text-xs text-gray-500 mb-1">原始路径: ${escapeHtml(bookmark.originalPath)}</div>` : ''}
+  200:       <div class="flex justify-between items-center">
+  201:         <span class="text-xs text-gray-500">${escapeHtml(bookmark.category || '未分类')}</span>
+  202:         ${checkBadge}
+  203:       </div>
+  204:     `;
+  205:     bookmarkGrid.appendChild(card);
+  206:   });
+  207: 
+  208:   document.querySelectorAll('.edit-bookmark').forEach((button) => {
+  209:     button.addEventListener('click', () => openEditBookmarkModal(button.dataset.id));
+  210:   });
+  211: }
+  212: 
+  213: function openEditBookmarkModal(bookmarkId) {
+  214:   const bookmark = bookmarks.find((b) => b.id === bookmarkId);
+  215:   if (!bookmark) return;
+  216:   document.getElementById('editBookmarkId').value = bookmark.id;
+  217:   document.getElementById('editTitle').value = bookmark.title;
+  218:   document.getElementById('editUrl').value = bookmark.url;
+  219:   document.getElementById('editCategory').value = bookmark.category;
+  220:   document.getElementById('editBookmarkModal').classList.remove('hidden');
+  221: }
+  222: 
+  223: function parseChromeBookmarks(html) {
+  224:   const parser = new DOMParser();
+  225:   const doc = parser.parseFromString(html, 'text/html');
+  226:   const parsedBookmarks = [];
+  227: 
+  228:   function walk(node, path = []) {
+  229:     const tag = (node.tagName || '').toUpperCase();
+  230: 
+  231:     if (tag === 'A') {
+  232:       const title = (node.textContent || '').trim();
+  233:       const url = (node.getAttribute('href') || '').trim();
+  234:       if (title && /^https?:\/\//i.test(url)) {
+  235:         let favicon = '';
+  236:         try {
+  237:           favicon = `https://www.google.com/s2/favicons?domain=${new URL(url).hostname}&sz=16`;
+  238:         } catch (_) {
+  239:           favicon = '';
+  240:         }
+  241:         const category = path.length > 1 ? path[1] : '未分类';
+  242:         parsedBookmarks.push({
+  243:           id: generateId(),
+  244:           title,
+  245:           url,
+  246:           category,
+  247:           favicon,
+  248:           originalPath: path.join('/'),
+  249:           createdAt: new Date().toISOString(),
+  250:           updatedAt: new Date().toISOString()
+  251:         });
+  252:       }
+  253:       return;
+  254:     }
+  255: 
+  256:     if (tag === 'H3') {
+  257:       const folderName = (node.textContent || '').trim();
+  258:       let dl = node.nextElementSibling;
+  259:       while (dl && (dl.tagName || '').toUpperCase() !== 'DL') {
+  260:         dl = dl.nextElementSibling;
+  261:       }
+  262:       if (dl) {
+  263:         Array.from(dl.children).forEach((child) => walk(child, [...path, folderName]));
+  264:       }
+  265:       return;
+  266:     }
+  267: 
+  268:     Array.from(node.children || []).forEach((child) => walk(child, path));
+  269:   }
+  270: 
+  271:   const rootDL = doc.querySelector('dl');
+  272:   if (rootDL) {
+  273:     Array.from(rootDL.children).forEach((child) => walk(child, []));
+  274:   }
+  275:   return dedupeBookmarks(parsedBookmarks);
+  276: }
+  277: 
+  278: function dedupeBookmarks(items) {
+  279:   const set = new Set();
+  280:   const result = [];
+  281:   items.forEach((item) => {
+  282:     const key = normalizeUrl(item.url);
+  283:     if (!key || set.has(key)) return;
+  284:     set.add(key);
+  285:     result.push(item);
+  286:   });
+  287:   return result;
+  288: }
+  289: 
+  290: function generateId() {
+  291:   return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 9)}`;
+  292: }
+  293: 
+  294: function openEditCategoryModal(categoryId) {
+  295:   const category = categories.find((c) => c.id === categoryId);
+  296:   if (!category) return;
+  297:   document.getElementById('categoryName').value = category.name;
+  298:   document.getElementById('categoryColor').value = category.color;
+  299: 
+  300:   const parent = document.getElementById('parentCategory');
+  301:   if (parent) {
+  302:     parent.innerHTML = '<option value="">无父分类</option>';
+  303:     categories.forEach((c) => {
+  304:       if (c.id === category.id) return;
+  305:       const option = document.createElement('option');
+  306:       option.value = c.id;
+  307:       option.textContent = c.name;
+  308:       if (c.id === category.parentId) option.selected = true;
+  309:       parent.appendChild(option);
+  310:     });
+  311:   }
+  312: 
+  313:   const saveButton = document.getElementById('saveCategoryBtn');
+  314:   saveButton.dataset.editId = category.id;
+  315:   document.getElementById('addCategoryModal').classList.remove('hidden');
+  316: }
+  317: 
+  318: function resetCategoryModalState() {
+  319:   const saveButton = document.getElementById('saveCategoryBtn');
+  320:   delete saveButton.dataset.editId;
+  321:   document.getElementById('categoryName').value = '';
+  322:   document.getElementById('categoryColor').value = '#3498db';
+  323:   const parent = document.getElementById('parentCategory');
+  324:   if (parent) parent.value = '';
+  325: }
+  326: 
+  327: function deleteCategory(categoryId) {
+  328:   const category = categories.find((c) => c.id === categoryId);
+  329:   if (!category) return;
+  330:   if (!confirm('确定要删除这个分类吗？该分类下书签会转移到“未分类”。')) return;
+  331: 
+  332:   operationHistory.push({ type: 'deleteCategory', category: { ...category }, timestamp: new Date().toISOString() });
+  333:   bookmarks = bookmarks.map((b) => (b.category === category.name ? { ...b, category: '未分类' } : b));
+  334:   categories = categories.filter((c) => c.id !== categoryId);
+  335:   if (currentCategory === category.name) currentCategory = '全部';
+  336: 
+  337:   saveCategories();
+  338:   saveBookmarks();
+  339:   refreshLists();
+  340:   rebuildCheckRowsFromBookmarks();
+  341: }
+  342: 
+  343: function setTab(activeTab) {
+  344:   const bookmarksSection = document.getElementById('bookmarksSection');
+  345:   const checkerSection = document.getElementById('checkerSection');
+  346:   const tabBookmarksBtn = document.getElementById('tabBookmarksBtn');
+  347:   const tabCheckerBtn = document.getElementById('tabCheckerBtn');
+  348: 
+  349:   if (activeTab === 'checker') {
+  350:     bookmarksSection.classList.add('hidden');
+  351:     checkerSection.classList.remove('hidden');
+  352:     tabBookmarksBtn.classList.remove('tab-btn-active');
+  353:     tabBookmarksBtn.classList.add('tab-btn-normal');
+  354:     tabCheckerBtn.classList.remove('tab-btn-normal');
+  355:     tabCheckerBtn.classList.add('tab-btn-active');
+  356:     renderCheckTree();
+  357:     renderCheckResults();
+  358:     updateCheckStats();
+  359:     return;
+  360:   }
+  361: 
+  362:   checkerSection.classList.add('hidden');
+  363:   bookmarksSection.classList.remove('hidden');
+  364:   tabCheckerBtn.classList.remove('tab-btn-active');
+  365:   tabCheckerBtn.classList.add('tab-btn-normal');
+  366:   tabBookmarksBtn.classList.remove('tab-btn-normal');
+  367:   tabBookmarksBtn.classList.add('tab-btn-active');
+  368: }
+  369: 
+  370: function normalizeUrl(raw) {
+  371:   if (!raw) return '';
+  372:   try {
+  373:     const u = new URL(raw);
+  374:     u.hash = '';
+  375:     u.hostname = u.hostname.toLowerCase();
+  376:     if (u.pathname.endsWith('/')) u.pathname = u.pathname.slice(0, -1);
+  377:     const removeKeys = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'spm'];
+  378:     removeKeys.forEach((k) => u.searchParams.delete(k));
+  379:     return u.toString();
+  380:   } catch (_) {
+  381:     return raw.trim().toLowerCase();
+  382:   }
+  383: }
+  384: 
+  385: function rebuildCheckRowsFromBookmarks() {
+  386:   const oldMap = new Map(checkState.rows.map((r) => [r.id, r]));
+  387:   checkState.rows = bookmarks.map((b, idx) => {
+  388:     const old = oldMap.get(b.id);
+  389:     return {
+  390:       id: b.id,
+  391:       index: idx + 1,
+  392:       folder: b.originalPath || b.category || '未分类',
+  393:       category: b.category || '未分类',
+  394:       title: b.title,
+  395:       url: b.url,
+  396:       normalizedUrl: normalizeUrl(b.url),
+  397:       selected: false,
+  398:       attempts: old?.attempts || [],
+  399:       finalStatus: old?.finalStatus || 'unchecked',
+  400:       latencyMs: old?.latencyMs || null,
+  401:       reason: old?.reason || '',
+  402:       isDuplicate: false,
+  403:       duplicateGroup: null
+  404:     };
+  405:   });
+  406:   recomputeDuplicates();
+  407: }
+  408: 
+  409: function recomputeDuplicates() {
+  410:   const groupMap = new Map();
+  411:   checkState.rows.forEach((row) => {
+  412:     const key = row.normalizedUrl;
+  413:     if (!groupMap.has(key)) groupMap.set(key, []);
+  414:     groupMap.get(key).push(row);
+  415:   });
+  416: 
+  417:   checkState.duplicates = [];
+  418:   checkState.rows.forEach((row) => {
+  419:     row.isDuplicate = false;
+  420:     row.duplicateGroup = null;
+  421:   });
+  422: 
+  423:   groupMap.forEach((rows, key) => {
+  424:     if (!key || rows.length <= 1) return;
+  425:     rows.forEach((row, idx) => {
+  426:       row.isDuplicate = true;
+  427:       row.duplicateGroup = key;
+  428:       if (idx > 0) checkState.duplicates.push(row);
+  429:     });
+  430:   });
+  431: }
+  432: function renderCheckTree() {
+  433:   const tree = document.getElementById('checkTree');
+  434:   if (!tree) return;
+  435: 
+  436:   const folderMap = new Map();
+  437:   checkState.rows.forEach((r) => {
+  438:     const key = r.folder || '未分类';
+  439:     if (!folderMap.has(key)) folderMap.set(key, { total: 0, valid: 0, invalid: 0 });
+  440:     const s = folderMap.get(key);
+  441:     s.total += 1;
+  442:     if (r.finalStatus === 'valid') s.valid += 1;
+  443:     if (r.finalStatus === 'invalid') s.invalid += 1;
+  444:   });
+  445: 
+  446:   if (folderMap.size === 0) {
+  447:     tree.innerHTML = '<p class="text-gray-500">暂无数据</p>';
+  448:     return;
+  449:   }
+  450: 
+  451:   tree.innerHTML = Array.from(folderMap.entries())
+  452:     .map(([name, s]) => `
+  453:       <div class="mb-2 border border-gray-200 rounded p-2">
+  454:         <div class="font-medium break-all">${escapeHtml(name)}</div>
+  455:         <div class="text-xs text-gray-600 mt-1">共 ${s.total} | 有效 ${s.valid} | 失效 ${s.invalid}</div>
+  456:       </div>
+  457:     `)
+  458:     .join('');
+  459: }
+  460: 
+  461: function renderCheckResults() {
+  462:   const body = document.getElementById('checkResultsBody');
+  463:   if (!body) return;
+  464: 
+  465:   const filter = checkState.selectedFilter;
+  466:   let rows = checkState.rows;
+  467:   if (filter === 'valid') rows = rows.filter((r) => r.finalStatus === 'valid');
+  468:   if (filter === 'invalid') rows = rows.filter((r) => r.finalStatus === 'invalid');
+  469:   if (filter === 'duplicate') rows = rows.filter((r) => r.isDuplicate);
+  470:   if (filter === 'unchecked') rows = rows.filter((r) => r.finalStatus === 'unchecked');
+  471: 
+  472:   if (rows.length === 0) {
+  473:     body.innerHTML = '<tr><td class="p-3 text-center text-gray-500" colspan="8">暂无结果</td></tr>';
+  474:     return;
+  475:   }
+  476: 
+  477:   body.innerHTML = rows
+  478:     .map((row) => {
+  479:       const attempts = [0, 1, 2].map((i) => {
+  480:         const a = row.attempts[i];
+  481:         if (!a) return '-';
+  482:         return a.ok ? '<span class="text-green-600">√</span>' : '<span class="text-red-600">×</span>';
+  483:       });
+  484:       const statusBadge = row.finalStatus === 'valid'
+  485:         ? '<span class="badge-ok">有效</span>'
+  486:         : row.finalStatus === 'invalid'
+  487:           ? '<span class="badge-bad">失效</span>'
+  488:           : '<span class="badge-mid">未检测</span>';
+  489: 
+  490:       return `
+  491:         <tr class="border-b hover:bg-gray-50 cursor-pointer" data-row-id="${row.id}">
+  492:           <td class="p-2"><input type="checkbox" class="row-selector" data-id="${row.id}" ${row.selected ? 'checked' : ''}></td>
+  493:           <td class="p-2 max-w-[160px] truncate" title="${escapeAttr(row.folder)}">${escapeHtml(row.folder)}</td>
+  494:           <td class="p-2 max-w-[160px] truncate" title="${escapeAttr(row.title)}">${escapeHtml(row.title)}</td>
+  495:           <td class="p-2 max-w-[220px] truncate" title="${escapeAttr(row.url)}">${escapeHtml(row.url)}</td>
+  496:           <td class="p-2 text-center">${attempts[0]}</td>
+  497:           <td class="p-2 text-center">${attempts[1]}</td>
+  498:           <td class="p-2 text-center">${attempts[2]}</td>
+  499:           <td class="p-2 text-center">${statusBadge}</td>
+  500:         </tr>
+  501:       `;
+  502:     })
+  503:     .join('');
+  504: 
+  505:   body.querySelectorAll('.row-selector').forEach((checkbox) => {
+  506:     checkbox.addEventListener('change', (e) => {
+  507:       const row = checkState.rows.find((r) => r.id === checkbox.dataset.id);
+  508:       if (row) row.selected = e.target.checked;
+  509:     });
+  510:   });
+  511: 
+  512:   body.querySelectorAll('tr[data-row-id]').forEach((tr) => {
+  513:     tr.addEventListener('click', (e) => {
+  514:       if (e.target && e.target.closest('input')) return;
+  515:       const row = checkState.rows.find((r) => r.id === tr.dataset.rowId);
+  516:       if (!row) return;
+  517:       checkState.selectedPreviewId = row.id;
+  518:       renderPreview(row);
+  519:     });
+  520:   });
+  521: }
+  522: 
+  523: function renderPreview(row) {
+  524:   const panel = document.getElementById('previewPanel');
+  525:   if (!panel) return;
+  526:   if (!row) {
+  527:     panel.innerHTML = '<p class="text-gray-500">点击结果行查看详情</p>';
+  528:     return;
+  529:   }
+  530: 
+  531:   panel.innerHTML = `
+  532:     <div><b>标题:</b> ${escapeHtml(row.title)}</div>
+  533:     <div><b>分类:</b> ${escapeHtml(row.category || '未分类')}</div>
+  534:     <div><b>状态:</b> ${row.finalStatus === 'valid' ? '有效' : row.finalStatus === 'invalid' ? '失效' : '未检测'}</div>
+  535:     <div><b>耗时:</b> ${row.latencyMs || '-'} ms</div>
+  536:     <div><b>原因:</b> ${escapeHtml(row.reason || '-')}</div>
+  537:     <div class="break-all"><b>URL:</b> <a class="text-primary underline" href="${escapeAttr(row.url)}" target="_blank">${escapeHtml(row.url)}</a></div>
+  538:   `;
+  539: }
+  540: 
+  541: function updateCheckStats() {
+  542:   const rows = checkState.rows;
+  543:   const total = rows.length;
+  544:   const valid = rows.filter((r) => r.finalStatus === 'valid').length;
+  545:   const invalid = rows.filter((r) => r.finalStatus === 'invalid').length;
+  546:   const duplicate = checkState.duplicates.length;
+  547: 
+  548:   checkState.task.total = total;
+  549:   checkState.task.valid = valid;
+  550:   checkState.task.invalid = invalid;
+  551:   checkState.task.duplicate = duplicate;
+  552: 
+  553:   setText('statTotal', total);
+  554:   setText('statValid', valid);
+  555:   setText('statInvalid', invalid);
+  556:   setText('statDuplicate', duplicate);
+  557:   setText('statProgress', `${checkState.task.processed}/${checkState.task.total}`);
+  558: }
+  559: 
+  560: function setText(id, text) {
+  561:   const el = document.getElementById(id);
+  562:   if (el) el.textContent = String(text);
+  563: }
+  564: 
+  565: async function runCheck(mode) {
+  566:   if (checkState.running) {
+  567:     alert('检测任务正在运行中');
+  568:     return;
+  569:   }
+  570:   if (checkState.rows.length === 0) {
+  571:     alert('当前没有可检测的数据，请先导入书签');
+  572:     return;
+  573:   }
+  574: 
+  575:   const concurrency = clampInt(document.getElementById('checkConcurrency').value, 1, 200, 20);
+  576:   const timeoutSec = clampInt(document.getElementById('checkTimeout').value, 1, 60, 10);
+  577:   const retries = clampInt(document.getElementById('checkRetries').value, 1, 3, 3);
+  578:   saveCheckConfig({ concurrency, timeoutSec, retries });
+  579: 
+  580:   const targets = mode === 'failed'
+  581:     ? checkState.rows.filter((r) => r.finalStatus === 'invalid' || r.finalStatus === 'unchecked')
+  582:     : checkState.rows;
+  583: 
+  584:   if (targets.length === 0) {
+  585:     alert('没有需要检测的记录');
+  586:     return;
+  587:   }
+  588: 
+  589:   checkState.running = true;
+  590:   checkState.stopRequested = false;
+  591:   checkState.task.processed = 0;
+  592:   updateCheckStats();
+  593: 
+  594:   let cursor = 0;
+  595:   const workers = Array.from({ length: Math.min(concurrency, targets.length) }).map(async () => {
+  596:     while (true) {
+  597:       if (checkState.stopRequested) return;
+  598:       const idx = cursor;
+  599:       cursor += 1;
+  600:       if (idx >= targets.length) return;
+  601:       const row = targets[idx];
+  602:       const result = await checkUrlWithRetries(row.url, retries, timeoutSec * 1000);
+  603:       row.attempts = result.attempts;
+  604:       row.latencyMs = result.latencyMs;
+  605:       row.finalStatus = result.ok ? 'valid' : 'invalid';
+  606:       row.reason = result.reason;
+  607:       checkState.task.processed += 1;
+  608:       updateCheckStats();
+  609:       renderCheckResults();
+  610:       if (checkState.selectedPreviewId === row.id) renderPreview(row);
+  611:     }
+  612:   });
+  613: 
+  614:   await Promise.all(workers);
+  615:   checkState.running = false;
+  616:   recomputeDuplicates();
+  617:   renderCheckTree();
+  618:   renderCheckResults();
+  619:   updateCheckStats();
+  620:   renderBookmarks();
+  621:   alert(checkState.stopRequested ? '检测已停止' : '检测完成');
+  622: }
+  623: 
+  624: function stopCheck() {
+  625:   if (!checkState.running) return;
+  626:   checkState.stopRequested = true;
+  627: }
+  628: 
+  629: async function checkUrlWithRetries(url, retries, timeoutMs) {
+  630:   const attempts = [];
+  631:   let totalTime = 0;
+  632:   let lastReason = '未知错误';
+  633: 
+  634:   for (let i = 1; i <= retries; i += 1) {
+  635:     const start = Date.now();
+  636:     try {
+  637:       const ok = await checkUrlReachable(url, timeoutMs);
+  638:       const duration = Date.now() - start;
+  639:       totalTime += duration;
+  640:       attempts.push({ attemptNo: i, ok, durationMs: duration, reason: ok ? '' : '请求失败' });
+  641:       if (ok) {
+  642:         return { ok: true, attempts, latencyMs: Math.round(totalTime / attempts.length), reason: '' };
+  643:       }
+  644:       lastReason = '请求失败';
+  645:     } catch (err) {
+  646:       const duration = Date.now() - start;
+  647:       totalTime += duration;
+  648:       const reason = err && err.message ? err.message : '网络错误';
+  649:       attempts.push({ attemptNo: i, ok: false, durationMs: duration, reason });
+  650:       lastReason = reason;
+  651:     }
+  652:   }
+  653: 
+  654:   return { ok: false, attempts, latencyMs: Math.round(totalTime / attempts.length), reason: lastReason };
+  655: }
+  656: 
+  657: async function checkUrlReachable(url, timeoutMs) {
+  658:   const controller = new AbortController();
+  659:   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  660: 
+  661:   try {
+  662:     const headRes = await fetch(url, {
+  663:       method: 'HEAD',
+  664:       mode: 'no-cors',
+  665:       redirect: 'follow',
+  666:       signal: controller.signal,
+  667:       cache: 'no-store'
+  668:     });
+  669:     if (headRes.type === 'opaque' || headRes.ok) return true;
+  670:   } catch (_) {
+  671:     // HEAD 失败后尝试 GET
+  672:   }
+  673: 
+  674:   try {
+  675:     const getRes = await fetch(url, {
+  676:       method: 'GET',
+  677:       mode: 'no-cors',
+  678:       redirect: 'follow',
+  679:       signal: controller.signal,
+  680:       cache: 'no-store'
+  681:     });
+  682:     return getRes.type === 'opaque' || getRes.ok;
+  683:   } finally {
+  684:     clearTimeout(timer);
+  685:   }
+  686: }
+  687: 
+  688: function deleteInvalidLinks() {
+  689:   const invalidIds = new Set(checkState.rows.filter((r) => r.finalStatus === 'invalid').map((r) => r.id));
+  690:   if (invalidIds.size === 0) {
+  691:     alert('当前没有失效链接');
+  692:     return;
+  693:   }
+  694:   if (!confirm(`确认删除 ${invalidIds.size} 条失效链接吗？`)) return;
+  695: 
+  696:   bookmarks = bookmarks.filter((b) => !invalidIds.has(b.id));
+  697:   saveBookmarks();
+  698:   rebuildCheckRowsFromBookmarks();
+  699:   renderCategories();
+  700:   renderBookmarks();
+  701:   renderCheckTree();
+  702:   renderCheckResults();
+  703:   updateCheckStats();
+  704: }
+  705: 
+  706: function exportCheckedBookmarks() {
+  707:   const html = generateBookmarksHTML(bookmarks);
+  708:   downloadHtml(html, `bookmarks_checked_${today()}.html`);
+  709: }
+  710: 
+  711: function generateBookmarksHTML(source = bookmarks) {
+  712:   const byCategory = {};
+  713:   source.forEach((b) => {
+  714:     const key = b.category || '未分类';
+  715:     if (!byCategory[key]) byCategory[key] = [];
+  716:     byCategory[key].push(b);
+  717:   });
+  718: 
+  719:   let html = '<!DOCTYPE NETSCAPE-Bookmark-file-1>\n';
+  720:   html += '<!-- This is an automatically generated file. -->\n';
+  721:   html += '<META HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=UTF-8">\n';
+  722:   html += '<TITLE>Bookmarks</TITLE>\n<H1>Bookmarks</H1>\n<DL><p>\n';
+  723: 
+  724:   Object.keys(byCategory).forEach((category) => {
+  725:     html += `<DT><H3>${escapeHtml(category)}</H3>\n<DL><p>\n`;
+  726:     byCategory[category].forEach((b) => {
+  727:       html += `<DT><A HREF="${escapeAttr(b.url)}">${escapeHtml(b.title)}</A>\n`;
+  728:     });
+  729:     html += '</DL><p>\n';
+  730:   });
+  731:   html += '</DL><p>';
+  732:   return html;
+  733: }
+  734: 
+  735: function downloadHtml(content, fileName) {
+  736:   const blob = new Blob([content], { type: 'text/html' });
+  737:   const url = URL.createObjectURL(blob);
+  738:   const a = document.createElement('a');
+  739:   a.href = url;
+  740:   a.download = fileName;
+  741:   document.body.appendChild(a);
+  742:   a.click();
+  743:   a.remove();
+  744:   URL.revokeObjectURL(url);
+  745: }
+  746: 
+  747: function today() {
+  748:   return new Date().toISOString().slice(0, 10);
+  749: }
+  750: 
+  751: function openDuplicatesModal() {
+  752:   recomputeDuplicates();
+  753:   const body = document.getElementById('duplicatesBody');
+  754:   if (!body) return;
+  755: 
+  756:   if (checkState.duplicates.length === 0) {
+  757:     body.innerHTML = '<tr><td colspan="5" class="p-3 text-center text-gray-500">没有重复项</td></tr>';
+  758:   } else {
+  759:     body.innerHTML = checkState.duplicates
+  760:       .map((r) => `
+  761:         <tr class="border-b">
+  762:           <td class="p-2"><input type="checkbox" class="dup-selector" data-id="${r.id}" checked></td>
+  763:           <td class="p-2">${escapeHtml(r.category || '未分类')}</td>
+  764:           <td class="p-2">${escapeHtml(r.title)}</td>
+  765:           <td class="p-2 max-w-[320px] truncate" title="${escapeAttr(r.url)}">${escapeHtml(r.url)}</td>
+  766:           <td class="p-2">${r.index}</td>
+  767:         </tr>
+  768:       `)
+  769:       .join('');
+  770:   }
+  771:   document.getElementById('duplicatesModal').classList.remove('hidden');
+  772: }
+  773: 
+  774: function removeSelectedDuplicates() {
+  775:   const checked = Array.from(document.querySelectorAll('.dup-selector:checked')).map((el) => el.dataset.id);
+  776:   if (checked.length === 0) {
+  777:     alert('请先选择要删除的重复项');
+  778:     return;
+  779:   }
+  780:   const idSet = new Set(checked);
+  781:   bookmarks = bookmarks.filter((b) => !idSet.has(b.id));
+  782:   saveBookmarks();
+  783:   rebuildCheckRowsFromBookmarks();
+  784:   renderCategories();
+  785:   renderBookmarks();
+  786:   renderCheckTree();
+  787:   renderCheckResults();
+  788:   updateCheckStats();
+  789:   document.getElementById('duplicatesModal').classList.add('hidden');
+  790:   alert(`已删除 ${checked.length} 条重复书签`);
+  791: }
+  792: function closeModal(id) {
+  793:   const modal = document.getElementById(id);
+  794:   if (modal) modal.classList.add('hidden');
+  795: }
+  796: 
+  797: function openModal(id) {
+  798:   const modal = document.getElementById(id);
+  799:   if (modal) modal.classList.remove('hidden');
+  800: }
+  801: 
+  802: function saveCheckConfig(config) {
+  803:   localStorage.setItem('checkConfig', JSON.stringify(config));
+  804: }
+  805: 
+  806: function restoreCheckConfig() {
+  807:   const saved = localStorage.getItem('checkConfig');
+  808:   if (!saved) return;
+  809:   try {
+  810:     const cfg = JSON.parse(saved);
+  811:     if (cfg.concurrency) document.getElementById('checkConcurrency').value = cfg.concurrency;
+  812:     if (cfg.timeoutSec) document.getElementById('checkTimeout').value = cfg.timeoutSec;
+  813:     if (cfg.retries) document.getElementById('checkRetries').value = cfg.retries;
+  814:   } catch (_) {
+  815:     // ignore parse error
+  816:   }
+  817: }
+  818: 
+  819: function clampInt(value, min, max, fallback) {
+  820:   const n = Number.parseInt(value, 10);
+  821:   if (!Number.isFinite(n)) return fallback;
+  822:   return Math.max(min, Math.min(max, n));
+  823: }
+  824: 
+  825: function escapeHtml(input) {
+  826:   return String(input || '')
+  827:     .replace(/&/g, '&amp;')
+  828:     .replace(/</g, '&lt;')
+  829:     .replace(/>/g, '&gt;')
+  830:     .replace(/"/g, '&quot;')
+  831:     .replace(/'/g, '&#39;');
+  832: }
+  833: 
+  834: function escapeAttr(input) {
+  835:   return escapeHtml(input).replace(/`/g, '&#96;');
+  836: }
+  837: 
+  838: function setupEventListeners() {
+  839:   document.getElementById('tabBookmarksBtn').addEventListener('click', () => setTab('bookmarks'));
+  840:   document.getElementById('tabCheckerBtn').addEventListener('click', () => setTab('checker'));
+  841: 
+  842:   document.addEventListener('click', (e) => {
+  843:     const closeBtn = e.target.closest('[id^="close"]');
+  844:     if (!closeBtn) return;
+  845:     const id = closeBtn.id;
+  846:     if (id === 'closeImportModal') closeModal('importModal');
+  847:     if (id === 'closeSettingsModal' || id === 'closeSettingsBottomBtn') closeModal('settingsModal');
+  848:     if (id === 'closeEditBookmarkModal') closeModal('editBookmarkModal');
+  849:     if (id === 'closeAddCategoryModal') {
+  850:       resetCategoryModalState();
+  851:       closeModal('addCategoryModal');
+  852:     }
+  853:     if (id === 'closeDuplicatesModal') closeModal('duplicatesModal');
+  854:   });
+  855: 
+  856:   document.querySelectorAll('[id$="Modal"]').forEach((modal) => {
+  857:     modal.addEventListener('click', (e) => {
+  858:       if (e.target === modal) modal.classList.add('hidden');
+  859:     });
+  860:   });
+  861: 
+  862:   document.getElementById('importBtn').addEventListener('click', () => openModal('importModal'));
+  863:   document.getElementById('settingsBtn').addEventListener('click', () => openModal('settingsModal'));
+  864:   document.getElementById('addCategoryBtn').addEventListener('click', () => {
+  865:     resetCategoryModalState();
+  866:     openModal('addCategoryModal');
+  867:   });
+  868:   document.getElementById('addBookmarkBtn').addEventListener('click', () => openModal('importModal'));
+  869: 
+  870:   document.getElementById('importFileBtn').addEventListener('click', () => {
+  871:     const file = document.getElementById('bookmarkFile').files[0];
+  872:     if (!file) {
+  873:       alert('请选择 Chrome 书签 HTML 文件');
+  874:       return;
+  875:     }
+  876:     const reader = new FileReader();
+  877:     reader.onload = (evt) => {
+  878:       const parsed = parseChromeBookmarks(String(evt.target.result || ''));
+  879:       if (parsed.length === 0) {
+  880:         alert('未解析到有效书签，请确认文件格式');
+  881:         return;
+  882:       }
+  883: 
+  884:       const existingMap = new Map(bookmarks.map((b) => [normalizeUrl(b.url), b]));
+  885:       const duplicates = [];
+  886:       const unique = [];
+  887: 
+  888:       parsed.forEach((item) => {
+  889:         const key = normalizeUrl(item.url);
+  890:         if (existingMap.has(key)) duplicates.push({ old: existingMap.get(key), item });
+  891:         else unique.push(item);
+  892:       });
+  893: 
+  894:       if (duplicates.length > 0) {
+  895:         const shouldOverwrite = confirm(`检测到 ${duplicates.length} 个重复书签，是否覆盖现有书签？`);
+  896:         if (shouldOverwrite) {
+  897:           duplicates.forEach(({ old, item }) => {
+  898:             const idx = bookmarks.findIndex((b) => b.id === old.id);
+  899:             if (idx >= 0) bookmarks[idx] = { ...item, id: old.id };
+  900:           });
+  901:         }
+  902:       }
+  903: 
+  904:       bookmarks = [...bookmarks, ...unique];
+  905:       ensureCategoriesExist(parsed.map((p) => p.category));
+  906:       saveBookmarks();
+  907:       saveCategories();
+  908: 
+  909:       operationHistory.push({ type: 'import', bookmarks: [...bookmarks], timestamp: new Date().toISOString() });
+  910: 
+  911:       currentCategory = '全部';
+  912:       document.getElementById('searchInput').value = '';
+  913:       refreshLists();
+  914:       rebuildCheckRowsFromBookmarks();
+  915:       renderCheckTree();
+  916:       renderCheckResults();
+  917:       updateCheckStats();
+  918:       closeModal('importModal');
+  919:       alert(`成功导入 ${unique.length} 个书签，${duplicates.length} 个重复书签`);
+  920:     };
+  921:     reader.readAsText(file);
+  922:   });
+  923: 
+  924:   document.getElementById('addManualBtn').addEventListener('click', () => {
+  925:     const title = document.getElementById('manualTitle').value.trim();
+  926:     const url = document.getElementById('manualUrl').value.trim();
+  927:     const category = document.getElementById('manualCategory').value || '未分类';
+  928: 
+  929:     if (!title || !url) {
+  930:       alert('请填写网站标题和 URL');
+  931:       return;
+  932:     }
+  933: 
+  934:     let favicon = '';
+  935:     try {
+  936:       favicon = `https://www.google.com/s2/favicons?domain=${new URL(url).hostname}&sz=16`;
+  937:     } catch (_) {
+  938:       favicon = '';
+  939:     }
+  940: 
+  941:     const row = {
+  942:       id: generateId(),
+  943:       title,
+  944:       url,
+  945:       category,
+  946:       favicon,
+  947:       originalPath: '手动添加',
+  948:       createdAt: new Date().toISOString(),
+  949:       updatedAt: new Date().toISOString()
+  950:     };
+  951: 
+  952:     bookmarks.push(row);
+  953:     operationHistory.push({ type: 'add', bookmark: row, timestamp: new Date().toISOString() });
+  954:     saveBookmarks();
+  955:     refreshLists();
+  956:     rebuildCheckRowsFromBookmarks();
+  957:     renderCheckTree();
+  958:     renderCheckResults();
+  959:     updateCheckStats();
+  960:     document.getElementById('manualTitle').value = '';
+  961:     document.getElementById('manualUrl').value = '';
+  962:     alert('书签添加成功');
+  963:   });
+  964: 
+  965:   document.getElementById('saveBookmarkBtn').addEventListener('click', () => {
+  966:     const id = document.getElementById('editBookmarkId').value;
+  967:     const title = document.getElementById('editTitle').value.trim();
+  968:     const url = document.getElementById('editUrl').value.trim();
+  969:     const category = document.getElementById('editCategory').value;
+  970: 
+  971:     if (!title || !url) {
+  972:       alert('请填写网站标题和 URL');
+  973:       return;
+  974:     }
+  975: 
+  976:     const idx = bookmarks.findIndex((b) => b.id === id);
+  977:     if (idx < 0) return;
+  978: 
+  979:     const oldBookmark = { ...bookmarks[idx] };
+  980:     let favicon = bookmarks[idx].favicon;
+  981:     try {
+  982:       favicon = `https://www.google.com/s2/favicons?domain=${new URL(url).hostname}&sz=16`;
+  983:     } catch (_) {
+  984:       // keep old favicon
+  985:     }
+  986: 
+  987:     bookmarks[idx] = { ...bookmarks[idx], title, url, category, favicon, updatedAt: new Date().toISOString() };
+  988:     operationHistory.push({ type: 'update', oldBookmark, newBookmark: { ...bookmarks[idx] }, timestamp: new Date().toISOString() });
+  989:     saveBookmarks();
+  990:     refreshLists();
+  991:     rebuildCheckRowsFromBookmarks();
+  992:     renderCheckTree();
+  993:     renderCheckResults();
+  994:     updateCheckStats();
+  995:     closeModal('editBookmarkModal');
+  996:     alert('书签更新成功');
+  997:   });
+  998: 
+  999:   document.getElementById('deleteBookmarkBtn').addEventListener('click', () => {
+ 1000:     if (!confirm('确定要删除这个书签吗？')) return;
+ 1001:     const id = document.getElementById('editBookmarkId').value;
+ 1002:     const found = bookmarks.find((b) => b.id === id);
+ 1003:     if (!found) return;
+ 1004: 
+ 1005:     operationHistory.push({ type: 'delete', bookmark: found, timestamp: new Date().toISOString() });
+ 1006:     bookmarks = bookmarks.filter((b) => b.id !== id);
+ 1007:     saveBookmarks();
+ 1008:     refreshLists();
+ 1009:     rebuildCheckRowsFromBookmarks();
+ 1010:     renderCheckTree();
+ 1011:     renderCheckResults();
+ 1012:     updateCheckStats();
+ 1013:     closeModal('editBookmarkModal');
+ 1014:     alert('书签删除成功');
+ 1015:   });
+ 1016: 
+ 1017:   document.getElementById('saveCategoryBtn').addEventListener('click', () => {
+ 1018:     const name = document.getElementById('categoryName').value.trim();
+ 1019:     const color = document.getElementById('categoryColor').value;
+ 1020:     const parentId = document.getElementById('parentCategory').value || null;
+ 1021:     const saveBtn = document.getElementById('saveCategoryBtn');
+ 1022:     const editId = saveBtn.dataset.editId;
+ 1023: 
+ 1024:     if (!name) {
+ 1025:       alert('请填写分类名称');
+ 1026:       return;
+ 1027:     }
+ 1028: 
+ 1029:     const exists = categories.find((c) => c.name === name && c.id !== editId);
+ 1030:     if (exists) {
+ 1031:       alert('分类名称已存在');
+ 1032:       return;
+ 1033:     }
+ 1034: 
+ 1035:     if (editId) {
+ 1036:       const idx = categories.findIndex((c) => c.id === editId);
+ 1037:       if (idx < 0) return;
+ 1038:       const oldName = categories[idx].name;
+ 1039:       categories[idx] = { ...categories[idx], name, color, parentId, updatedAt: new Date().toISOString() };
+ 1040:       if (oldName !== name) {
+ 1041:         bookmarks = bookmarks.map((b) => (b.category === oldName ? { ...b, category: name } : b));
+ 1042:         if (currentCategory === oldName) currentCategory = name;
+ 1043:         saveBookmarks();
+ 1044:       }
+ 1045:       saveCategories();
+ 1046:       refreshLists();
+ 1047:       rebuildCheckRowsFromBookmarks();
+ 1048:       closeModal('addCategoryModal');
+ 1049:       resetCategoryModalState();
+ 1050:       alert('分类更新成功');
+ 1051:       return;
+ 1052:     }
+ 1053: 
+ 1054:     categories.push({ id: generateId(), name, color, parentId, createdAt: new Date().toISOString() });
+ 1055:     saveCategories();
+ 1056:     refreshLists();
+ 1057:     closeModal('addCategoryModal');
+ 1058:     resetCategoryModalState();
+ 1059:     alert('分类添加成功');
+ 1060:   });
+ 1061: 
+ 1062:   document.getElementById('exportBtn').addEventListener('click', () => {
+ 1063:     const html = generateBookmarksHTML(bookmarks);
+ 1064:     downloadHtml(html, `bookmarks_${today()}.html`);
+ 1065:     alert('书签导出成功');
+ 1066:   });
+ 1067: 
+ 1068:   document.getElementById('clearBtn').addEventListener('click', () => {
+ 1069:     if (!confirm('确定要清空所有书签吗？此操作不可恢复。')) return;
+ 1070:     bookmarks = [];
+ 1071:     saveBookmarks();
+ 1072:     refreshLists();
+ 1073:     rebuildCheckRowsFromBookmarks();
+ 1074:     renderCheckTree();
+ 1075:     renderCheckResults();
+ 1076:     updateCheckStats();
+ 1077:     alert('所有书签已清空');
+ 1078:   });
+ 1079: 
+ 1080:   document.getElementById('undoBtn').addEventListener('click', () => {
+ 1081:     if (operationHistory.length === 0) {
+ 1082:       alert('没有可撤销的操作');
+ 1083:       return;
+ 1084:     }
+ 1085:     const op = operationHistory.pop();
+ 1086:     if (op.type === 'add') bookmarks = bookmarks.filter((b) => b.id !== op.bookmark.id);
+ 1087:     if (op.type === 'delete') bookmarks.push(op.bookmark);
+ 1088:     if (op.type === 'update') {
+ 1089:       const idx = bookmarks.findIndex((b) => b.id === op.oldBookmark.id);
+ 1090:       if (idx >= 0) bookmarks[idx] = op.oldBookmark;
+ 1091:     }
+ 1092:     if (op.type === 'import') bookmarks = op.bookmarks;
+ 1093: 
+ 1094:     saveBookmarks();
+ 1095:     refreshLists();
+ 1096:     rebuildCheckRowsFromBookmarks();
+ 1097:     renderCheckTree();
+ 1098:     renderCheckResults();
+ 1099:     updateCheckStats();
+ 1100:     alert('操作已撤销');
+ 1101:   });
+ 1102: 
+ 1103:   document.getElementById('searchInput').addEventListener('input', (e) => {
+ 1104:     const key = e.target.value.trim().toLowerCase();
+ 1105:     document.querySelectorAll('.bookmark-card').forEach((card) => {
+ 1106:       const text = card.textContent.toLowerCase();
+ 1107:       card.style.display = text.includes(key) ? 'block' : 'none';
+ 1108:     });
+ 1109:   });
+ 1110: 
+ 1111:   document.getElementById('themeSelect').addEventListener('change', (e) => {
+ 1112:     if (e.target.value === 'dark') {
+ 1113:       document.body.classList.add('bg-gray-900', 'text-white');
+ 1114:       document.body.classList.remove('bg-neutral');
+ 1115:       return;
+ 1116:     }
+ 1117:     document.body.classList.add('bg-neutral');
+ 1118:     document.body.classList.remove('bg-gray-900', 'text-white');
+ 1119:   });
+ 1120: 
+ 1121:   document.getElementById('fontSizeSlider').addEventListener('input', (e) => {
+ 1122:     document.body.style.fontSize = `${e.target.value}px`;
+ 1123:   });
+ 1124: 
+ 1125:   document.getElementById('checkerFileInput').addEventListener('change', () => {
+ 1126:     const file = document.getElementById('checkerFileInput').files[0];
+ 1127:     if (!file) return;
+ 1128:     const reader = new FileReader();
+ 1129:     reader.onload = (evt) => {
+ 1130:       const parsed = parseChromeBookmarks(String(evt.target.result || ''));
+ 1131:       if (parsed.length === 0) {
+ 1132:         alert('检测工作台未解析到数据');
+ 1133:         return;
+ 1134:       }
+ 1135:       checkState.rows = parsed.map((b, idx) => ({
+ 1136:         id: `temp_${idx}_${generateId()}`,
+ 1137:         index: idx + 1,
+ 1138:         folder: b.originalPath || b.category || '未分类',
+ 1139:         category: b.category || '未分类',
+ 1140:         title: b.title,
+ 1141:         url: b.url,
+ 1142:         normalizedUrl: normalizeUrl(b.url),
+ 1143:         selected: false,
+ 1144:         attempts: [],
+ 1145:         finalStatus: 'unchecked',
+ 1146:         latencyMs: null,
+ 1147:         reason: '',
+ 1148:         isDuplicate: false,
+ 1149:         duplicateGroup: null
+ 1150:       }));
+ 1151:       recomputeDuplicates();
+ 1152:       renderCheckTree();
+ 1153:       renderCheckResults();
+ 1154:       updateCheckStats();
+ 1155:       renderPreview(null);
+ 1156:       alert(`检测工作台已加载 ${checkState.rows.length} 条记录`);
+ 1157:     };
+ 1158:     reader.readAsText(file);
+ 1159:   });
+ 1160: 
+ 1161:   document.getElementById('checkFirstBtn').addEventListener('click', () => runCheck('all'));
+ 1162:   document.getElementById('checkRetryBtn').addEventListener('click', () => runCheck('failed'));
+ 1163:   document.getElementById('checkStopBtn').addEventListener('click', stopCheck);
+ 1164:   document.getElementById('deleteInvalidBtn').addEventListener('click', deleteInvalidLinks);
+ 1165:   document.getElementById('openDuplicatesBtn').addEventListener('click', openDuplicatesModal);
+ 1166:   document.getElementById('exportCheckedBtn').addEventListener('click', exportCheckedBookmarks);
+ 1167:   document.getElementById('resultFilter').addEventListener('change', (e) => {
+ 1168:     checkState.selectedFilter = e.target.value;
+ 1169:     renderCheckResults();
+ 1170:   });
+ 1171:   document.getElementById('removeSelectedDuplicatesBtn').addEventListener('click', removeSelectedDuplicates);
+ 1172:   document.getElementById('keepDuplicatesBtn').addEventListener('click', () => closeModal('duplicatesModal'));
+ 1173: }
+ 1174: 
+ 1175: init();
