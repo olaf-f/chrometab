@@ -13,6 +13,8 @@ const categoryTreeState = {
   expandedIds: new Set()
 };
 const ROOT_FOLDER_NAMES = new Set(['书签栏', 'Bookmarks Bar', 'Bookmarks bar', 'Other bookmarks', 'Mobile bookmarks']);
+const SUMMARY_CACHE_KEY = 'bookmarkSummaryCacheV1';
+const SUMMARY_NONE_TOKEN = '__NONE__';
 
 const checkState = {
   running: false,
@@ -31,6 +33,15 @@ const checkState = {
     invalid: 0,
     duplicate: 0
   }
+};
+
+const summaryState = {
+  cache: new Map(),
+  queue: [],
+  pendingKeys: new Set(),
+  inFlight: 0,
+  maxConcurrent: 3,
+  persistTimer: null
 };
 
 function init() {
@@ -58,6 +69,7 @@ function loadData() {
   }
   normalizeCategoryMeta();
   syncCategoryHierarchyFromStoredBookmarks();
+  loadSummaryCache();
 }
 
 function saveBookmarks() {
@@ -443,6 +455,8 @@ function renderBookmarks() {
 
   filtered.forEach((bookmark) => {
     const row = checkState.rowMap.get(bookmark.id);
+    const summaryText = getBookmarkSummary(bookmark);
+    const summaryDisplay = summaryText || (isBookmarkSummaryPending(bookmark) ? '正在抓取网站概要...' : '暂无网站概要');
     const checkBadge = row
       ? row.finalStatus === 'valid'
         ? '<span class="badge-ok">有效</span>'
@@ -467,12 +481,14 @@ function renderBookmarks() {
       </div>
       <a href="${escapeAttr(bookmark.url)}" target="_blank" class="text-primary text-sm truncate mb-1 block hover:underline">${escapeHtml(bookmark.url)}</a>
       ${bookmark.originalPath ? `<div class="text-xs text-gray-500 mb-1">原始路径: ${escapeHtml(bookmark.originalPath)}</div>` : ''}
+      <div class="bookmark-summary text-xs text-slate-600 mb-1" data-summary-for="${escapeAttr(bookmark.id)}">${escapeHtml(summaryDisplay)}</div>
       <div class="flex justify-between items-center">
         <span class="text-xs text-gray-500">${escapeHtml(bookmark.category || '未分类')}</span>
         ${checkBadge}
       </div>
     `;
     bookmarkGrid.appendChild(card);
+    queueSummaryFetch(bookmark);
   });
 
   document.querySelectorAll('.edit-bookmark').forEach((button) => {
@@ -514,6 +530,7 @@ function parseChromeBookmarks(html) {
           id: generateId(),
           title,
           url,
+          summary: '',
           category,
           categoryPath: folderPath,
           favicon,
@@ -649,6 +666,166 @@ function setTab(activeTab) {
   tabBookmarksBtn.classList.add('tab-btn-active');
 }
 
+function loadSummaryCache() {
+  summaryState.cache = new Map();
+  const saved = localStorage.getItem(SUMMARY_CACHE_KEY);
+  if (!saved) return;
+  try {
+    const obj = JSON.parse(saved);
+    if (!obj || typeof obj !== 'object') return;
+    Object.entries(obj).forEach(([key, value]) => {
+      if (!key) return;
+      const text = String(value || '');
+      if (text) summaryState.cache.set(key, text);
+    });
+  } catch (_) {
+    // ignore parse error
+  }
+}
+
+function scheduleSaveSummaryCache() {
+  if (summaryState.persistTimer) return;
+  summaryState.persistTimer = setTimeout(() => {
+    summaryState.persistTimer = null;
+    const payload = {};
+    summaryState.cache.forEach((value, key) => {
+      if (!key || !value) return;
+      payload[key] = value;
+    });
+    localStorage.setItem(SUMMARY_CACHE_KEY, JSON.stringify(payload));
+  }, 240);
+}
+
+function normalizeSummaryText(input, maxLen = 140) {
+  const clean = String(input || '').replace(/\s+/g, ' ').trim();
+  if (!clean) return '';
+  if (clean.length <= maxLen) return clean;
+  return `${clean.slice(0, maxLen - 1).trim()}...`;
+}
+
+function extractSummaryFromHtml(html) {
+  if (!html) return '';
+  try {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const meta =
+      doc.querySelector('meta[name="description"]')?.getAttribute('content') ||
+      doc.querySelector('meta[property="og:description"]')?.getAttribute('content') ||
+      doc.querySelector('meta[name="twitter:description"]')?.getAttribute('content') ||
+      '';
+    const metaSummary = normalizeSummaryText(meta);
+    if (metaSummary) return metaSummary;
+
+    const pText = Array.from(doc.querySelectorAll('p'))
+      .map((el) => normalizeSummaryText(el.textContent || '', 220))
+      .find((t) => t && t.length >= 24);
+    if (pText) return normalizeSummaryText(pText);
+
+    const bodyText = normalizeSummaryText(doc.body?.textContent || '', 240);
+    if (bodyText) return normalizeSummaryText(bodyText);
+  } catch (_) {
+    // ignore parse failure
+  }
+
+  return normalizeSummaryText(String(html || '').replace(/<[^>]+>/g, ' '));
+}
+
+async function fetchTextWithTimeout(url, timeoutMs = 9000) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { method: 'GET', signal: ctrl.signal });
+    if (!res.ok) return '';
+    return await res.text();
+  } catch (_) {
+    return '';
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchBookmarkSummary(url) {
+  const directHtml = await fetchTextWithTimeout(url, 7000);
+  let summary = extractSummaryFromHtml(directHtml);
+  if (summary) return summary;
+
+  const proxyUrl = `https://r.jina.ai/http://${String(url || '').replace(/^https?:\/\//i, '')}`;
+  const proxyText = await fetchTextWithTimeout(proxyUrl, 12000);
+  summary = extractSummaryFromHtml(proxyText);
+  return summary;
+}
+
+function getBookmarkSummary(bookmark) {
+  const own = normalizeSummaryText(bookmark?.summary || '');
+  if (own) return own;
+  const key = normalizeDuplicateUrl(bookmark?.url || '');
+  if (!key || !summaryState.cache.has(key)) return '';
+  const cached = summaryState.cache.get(key);
+  if (!cached || cached === SUMMARY_NONE_TOKEN) return '';
+  return normalizeSummaryText(cached);
+}
+
+function isBookmarkSummaryPending(bookmark) {
+  const key = normalizeDuplicateUrl(bookmark?.url || '');
+  return Boolean(key && summaryState.pendingKeys.has(key));
+}
+
+function updateSummaryDom(bookmarkId, summaryText) {
+  const el = document.querySelector(`[data-summary-for="${escapeAttr(bookmarkId)}"]`);
+  if (!el) return;
+  el.textContent = summaryText || '暂无网站概要';
+}
+
+function applySummaryByKey(key, summaryText) {
+  let changed = false;
+  const now = new Date().toISOString();
+  bookmarks.forEach((b) => {
+    if (normalizeDuplicateUrl(b.url) !== key) return;
+    if (summaryText && b.summary !== summaryText) {
+      b.summary = summaryText;
+      b.updatedAt = now;
+      changed = true;
+    }
+    updateSummaryDom(b.id, summaryText);
+  });
+  if (changed) saveBookmarks();
+}
+
+function queueSummaryFetch(bookmark) {
+  const key = normalizeDuplicateUrl(bookmark?.url || '');
+  if (!key) return;
+  if (getBookmarkSummary(bookmark)) return;
+  if (summaryState.cache.has(key)) return;
+  if (summaryState.pendingKeys.has(key)) return;
+  summaryState.pendingKeys.add(key);
+  summaryState.queue.push({ key, url: bookmark.url });
+  processSummaryQueue();
+}
+
+async function processSummaryQueue() {
+  while (summaryState.inFlight < summaryState.maxConcurrent && summaryState.queue.length > 0) {
+    const task = summaryState.queue.shift();
+    if (!task) return;
+    summaryState.inFlight += 1;
+    (async () => {
+      try {
+        const summary = normalizeSummaryText(await fetchBookmarkSummary(task.url));
+        if (summary) {
+          summaryState.cache.set(task.key, summary);
+          applySummaryByKey(task.key, summary);
+        } else {
+          summaryState.cache.set(task.key, SUMMARY_NONE_TOKEN);
+          applySummaryByKey(task.key, '');
+        }
+        scheduleSaveSummaryCache();
+      } finally {
+        summaryState.pendingKeys.delete(task.key);
+        summaryState.inFlight = Math.max(0, summaryState.inFlight - 1);
+        processSummaryQueue();
+      }
+    })();
+  }
+}
+
 function normalizeUrl(raw) {
   if (!raw) return '';
   try {
@@ -669,10 +846,19 @@ function normalizeDuplicateUrl(raw) {
   try {
     const u = new URL(raw);
     u.hash = '';
-    u.hostname = u.hostname.toLowerCase();
+    u.protocol = (u.protocol || '').toLowerCase();
+    u.hostname = (u.hostname || '').toLowerCase();
+    if ((u.protocol === 'http:' && u.port === '80') || (u.protocol === 'https:' && u.port === '443')) {
+      u.port = '';
+    }
+    if (u.pathname.endsWith('/') && u.pathname !== '/') u.pathname = u.pathname.slice(0, -1);
     return u.toString();
   } catch (_) {
-    return String(raw || '').trim();
+    return String(raw || '')
+      .trim()
+      .replace(/#.*$/, '')
+      .replace(/\/$/, '')
+      .toLowerCase();
   }
 }
 
@@ -1308,6 +1494,7 @@ function setupEventListeners() {
       id: generateId(),
       title,
       url,
+      summary: '',
       category,
       favicon,
       originalPath: '手动添加',
@@ -1343,6 +1530,8 @@ function setupEventListeners() {
     if (idx < 0) return;
 
     const oldBookmark = { ...bookmarks[idx] };
+    const oldNormalizedUrl = normalizeDuplicateUrl(bookmarks[idx].url);
+    const newNormalizedUrl = normalizeDuplicateUrl(url);
     let favicon = bookmarks[idx].favicon;
     try {
       favicon = `https://www.google.com/s2/favicons?domain=${new URL(url).hostname}&sz=16`;
@@ -1350,7 +1539,15 @@ function setupEventListeners() {
       // keep old favicon
     }
 
-    bookmarks[idx] = { ...bookmarks[idx], title, url, category, favicon, updatedAt: new Date().toISOString() };
+    bookmarks[idx] = {
+      ...bookmarks[idx],
+      title,
+      url,
+      category,
+      favicon,
+      summary: oldNormalizedUrl === newNormalizedUrl ? (bookmarks[idx].summary || '') : '',
+      updatedAt: new Date().toISOString()
+    };
     operationHistory.push({ type: 'update', oldBookmark, newBookmark: { ...bookmarks[idx] }, timestamp: new Date().toISOString() });
     saveBookmarks();
     refreshLists();
@@ -1458,6 +1655,10 @@ function setupEventListeners() {
       timestamp: new Date().toISOString()
     });
     bookmarks = [];
+    summaryState.cache.clear();
+    summaryState.queue = [];
+    summaryState.pendingKeys.clear();
+    localStorage.removeItem(SUMMARY_CACHE_KEY);
     resetCategoriesToDefault();
     categoryTreeState.expandedIds.clear();
     currentCategory = '全部';
